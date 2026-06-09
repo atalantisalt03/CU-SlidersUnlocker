@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>UnlockedSliders</AssemblyName>
+    <RootNamespace>UnlockedSliders</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <GameDir Condition="'$(GameDir)' == ''">$(CASUALTIES_UNKNOWN_DIR)</GameDir>
+    <BepInExCoreDir>$(GameDir)\BepInEx\core</BepInExCoreDir>
+    <ManagedDir>$(GameDir)\CasualtiesUnknown_Data\Managed</ManagedDir>
+  </PropertyGroup>
+
+  <Target Name="ValidateGameReferences" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(GameDir)' == ''"
+      Text="GameDir is not set. Run build-and-install.bat, set CASUALTIES_UNKNOWN_DIR, or pass -p:GameDir=&quot;...\Casualties Unknown Demo&quot;." />
+    <Error Condition="'$(GameDir)' != '' and !Exists('$(BepInExCoreDir)\BepInEx.dll')"
+      Text="Could not find BepInEx.dll at '$(BepInExCoreDir)\BepInEx.dll'. Install BepInEx or pass the correct -p:GameDir path." />
+    <Error Condition="'$(GameDir)' != '' and !Exists('$(ManagedDir)\UnityEngine.CoreModule.dll')"
+      Text="Could not find Unity managed assemblies at '$(ManagedDir)'. Pass the correct -p:GameDir path." />
+  </Target>
+
+  <ItemGroup>
+    <Compile Remove="old\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>$(BepInExCoreDir)\BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(ManagedDir)\Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(ManagedDir)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(ManagedDir)\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(ManagedDir)\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
