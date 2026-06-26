@@ -7,6 +7,7 @@ using BepInEx.Configuration;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
 namespace UnlockedSliders;
@@ -16,31 +17,124 @@ public sealed class UnlockedSlidersPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "kef.casualtiesunknown.unlockedsliders";
     public const string PluginName = "Unlocked Sliders";
-    public const string PluginVersion = "0.2.7";
+    public const string PluginVersion = "0.2.14";
 
-    private const float ScanInterval = 0.5f;
+    internal const float ScanInterval = 0.5f;
+    private const float DiagnosticLogInterval = 10f;
     private const string ResetEntryName = "UnlockedSlidersResetEntry";
     private const string OldResetButtonName = "UnlockedSlidersResetButton";
 
+    private static UnlockedSlidersPlugin activePlugin;
+    private static bool staticHooksInstalled;
+
     private readonly Dictionary<string, SliderLimitConfig> limitConfigs = new Dictionary<string, SliderLimitConfig>();
     private readonly List<UnlockedSliderControl> controls = new List<UnlockedSliderControl>();
+    private ConfigEntry<bool> diagnosticsEnabled;
     private bool pendingConfigSave;
+    private bool loggedFirstUpdate;
+    private bool loggedFirstCanvasRender;
     private float nextScanTime;
+    private float nextCanvasScanTime;
+    private float nextDiagnosticLogTime;
+    private string lastDiagnosticState;
 
     private void Awake()
     {
-        Logger.LogInfo($"{PluginName} {PluginVersion} loaded.");
+        diagnosticsEnabled = Config.Bind(
+            "Diagnostics",
+            "Enabled",
+            true,
+            "Writes low-volume scan diagnostics to BepInEx/LogOutput.log. Useful when the plugin loads but the UI is not enhanced.");
+        activePlugin = this;
+        EnsureStaticHooks();
+        Logger.LogInfo($"{PluginName} {PluginVersion} loaded. Diagnostics={diagnosticsEnabled.Value}.");
+        Logger.LogInfo($"Runtime: Unity {Application.unityVersion}, product '{Application.productName}', plugin path '{Paths.PluginPath}'.");
+        RunScan("awake");
+    }
+
+    private void Start()
+    {
+        Logger.LogInfo("Start callback fired.");
+        RunScan("start");
+    }
+
+    private void OnDestroy()
+    {
+        Logger.LogInfo("Plugin component destroyed; static hooks remain active.");
+    }
+
+    private static void EnsureStaticHooks()
+    {
+        if (staticHooksInstalled)
+        {
+            return;
+        }
+
+        staticHooksInstalled = true;
+        SceneManager.sceneLoaded += OnSceneLoadedStatic;
+        Canvas.willRenderCanvases += OnCanvasWillRenderCanvasesStatic;
+    }
+
+    private static void OnSceneLoadedStatic(Scene scene, LoadSceneMode mode)
+    {
+        activePlugin?.OnSceneLoaded(scene, mode);
+    }
+
+    private static void OnCanvasWillRenderCanvasesStatic()
+    {
+        activePlugin?.OnCanvasWillRenderCanvases();
+    }
+
+    private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        Logger.LogInfo($"Scene loaded: '{scene.name}' ({mode}); scanning.");
+        RunScan("sceneLoaded");
     }
 
     private void Update()
     {
+        if (!loggedFirstUpdate)
+        {
+            loggedFirstUpdate = true;
+            Logger.LogInfo("Update callback fired.");
+        }
+
         if (Time.unscaledTime < nextScanTime)
         {
             return;
         }
 
         nextScanTime = Time.unscaledTime + ScanInterval;
-        EnhanceVisibleSettings();
+        RunScan("update");
+    }
+
+    private void OnCanvasWillRenderCanvases()
+    {
+        if (!loggedFirstCanvasRender)
+        {
+            loggedFirstCanvasRender = true;
+            Logger.LogInfo("Canvas render callback fired.");
+        }
+
+        if (Time.unscaledTime < nextCanvasScanTime)
+        {
+            return;
+        }
+
+        nextCanvasScanTime = Time.unscaledTime + ScanInterval;
+        RunScan("canvasRender");
+    }
+
+    internal void RunScan(string source)
+    {
+        try
+        {
+            EnhanceVisibleSettings(source);
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError($"Unlocked Sliders scan failed during {source}: {exception}");
+        }
     }
 
     internal SliderLimitConfig GetLimitConfig(string label, float originalMin, float originalMax)
@@ -73,13 +167,14 @@ public sealed class UnlockedSlidersPlugin : BaseUnityPlugin
         Config.Save();
     }
 
-    private void EnhanceVisibleSettings()
+    private void EnhanceVisibleSettings(string source)
     {
         Transform customSettings = FindCustomSettingsPanel();
+        Transform content = FindCustomSettingsContent(customSettings);
         if (customSettings != null)
         {
             RemoveOldHeaderResetButton(customSettings);
-            EnsureResetEntry(customSettings);
+            EnsureResetEntry(content);
         }
 
         for (int i = controls.Count - 1; i >= 0; i--)
@@ -90,10 +185,15 @@ public sealed class UnlockedSlidersPlugin : BaseUnityPlugin
             }
         }
 
-        MonoBehaviour[] behaviours = FindObjectsOfType<MonoBehaviour>();
-        foreach (MonoBehaviour behaviour in behaviours)
+        Dictionary<string, int> initializationFailures = new Dictionary<string, int>();
+        int displaysSeen = 0;
+        int floatRowsSeen = 0;
+        int newlyInitialized = 0;
+
+        foreach (MonoBehaviour behaviour in FindRunSettingDisplays(content))
         {
-            if (behaviour == null || behaviour.GetType().Name != "RunSettingDisplay")
+            displaysSeen++;
+            if (behaviour == null)
             {
                 continue;
             }
@@ -104,13 +204,26 @@ public sealed class UnlockedSlidersPlugin : BaseUnityPlugin
                 continue;
             }
 
+            floatRowsSeen++;
             UnlockedSliderControl control = row.GetComponent<UnlockedSliderControl>();
             if (control == null)
             {
                 control = row.AddComponent<UnlockedSliderControl>();
             }
 
-            control.TryInitialize(this, behaviour);
+            bool wasInitialized = control.IsInitialized;
+            if (control.TryInitialize(this, behaviour, out string failureReason))
+            {
+                if (!wasInitialized)
+                {
+                    newlyInitialized++;
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(failureReason))
+            {
+                initializationFailures.TryGetValue(failureReason, out int count);
+                initializationFailures[failureReason] = count + 1;
+            }
         }
 
         if (pendingConfigSave)
@@ -118,6 +231,8 @@ public sealed class UnlockedSlidersPlugin : BaseUnityPlugin
             Config.Save();
             pendingConfigSave = false;
         }
+
+        LogDiagnostics(source, customSettings, content, displaysSeen, floatRowsSeen, newlyInitialized, initializationFailures);
     }
 
     private void RemoveOldHeaderResetButton(Transform customSettings)
@@ -129,9 +244,8 @@ public sealed class UnlockedSlidersPlugin : BaseUnityPlugin
         }
     }
 
-    private void EnsureResetEntry(Transform customSettings)
+    private void EnsureResetEntry(Transform content)
     {
-        Transform content = customSettings.Find("Scroll/Viewport/Content");
         if (content == null || content.Find(ResetEntryName) != null || content.childCount == 0)
         {
             return;
@@ -294,10 +408,155 @@ public sealed class UnlockedSlidersPlugin : BaseUnityPlugin
         Logger.LogInfo("Unlocked slider limits reset to the game's default ranges.");
     }
 
+    private void LogDiagnostics(
+        string source,
+        Transform customSettings,
+        Transform content,
+        int displaysSeen,
+        int floatRowsSeen,
+        int newlyInitialized,
+        Dictionary<string, int> initializationFailures)
+    {
+        if (diagnosticsEnabled == null || !diagnosticsEnabled.Value)
+        {
+            return;
+        }
+
+        string failures = FormatFailureCounts(initializationFailures);
+        string state =
+            $"source={source}; " +
+            $"panel={(customSettings != null ? GetTransformPath(customSettings) : "not found")}; " +
+            $"content={(content != null ? GetTransformPath(content) : "not found")}; " +
+            $"displays={displaysSeen}; floatRows={floatRowsSeen}; controls={controls.Count}; new={newlyInitialized}; failures={failures}";
+
+        if (state == lastDiagnosticState && Time.unscaledTime < nextDiagnosticLogTime)
+        {
+            return;
+        }
+
+        lastDiagnosticState = state;
+        nextDiagnosticLogTime = Time.unscaledTime + DiagnosticLogInterval;
+        Logger.LogInfo($"Scan: {state}");
+    }
+
+    private static string FormatFailureCounts(Dictionary<string, int> failures)
+    {
+        if (failures == null || failures.Count == 0)
+        {
+            return "none";
+        }
+
+        List<string> parts = new List<string>();
+        foreach (KeyValuePair<string, int> failure in failures)
+        {
+            parts.Add($"{failure.Key} x{failure.Value}");
+        }
+
+        return string.Join(", ", parts.ToArray());
+    }
+
+    private static IEnumerable<MonoBehaviour> FindRunSettingDisplays(Transform content)
+    {
+        if (content != null)
+        {
+            foreach (MonoBehaviour behaviour in content.GetComponentsInChildren<MonoBehaviour>(true))
+            {
+                if (behaviour != null && behaviour.GetType().Name == "RunSettingDisplay")
+                {
+                    yield return behaviour;
+                }
+            }
+
+            yield break;
+        }
+
+        foreach (MonoBehaviour behaviour in FindObjectsOfType<MonoBehaviour>())
+        {
+            if (behaviour != null && behaviour.GetType().Name == "RunSettingDisplay")
+            {
+                yield return behaviour;
+            }
+        }
+    }
+
     private static Transform FindCustomSettingsPanel()
     {
         GameObject customSettings = GameObject.Find("Canvas/RunSettings/CustomSettings");
-        return customSettings != null ? customSettings.transform : null;
+        if (customSettings != null)
+        {
+            return customSettings.transform;
+        }
+
+        foreach (Transform transform in Resources.FindObjectsOfTypeAll<Transform>())
+        {
+            if (transform == null || !IsSceneObject(transform) || transform.name != "CustomSettings")
+            {
+                continue;
+            }
+
+            string path = GetTransformPath(transform);
+            if (path.EndsWith("RunSettings/CustomSettings", StringComparison.Ordinal))
+            {
+                return transform;
+            }
+        }
+
+        return null;
+    }
+
+    private static Transform FindCustomSettingsContent(Transform customSettings)
+    {
+        Transform content = customSettings?.Find("Scroll/Viewport/Content");
+        if (content != null)
+        {
+            return content;
+        }
+
+        GameObject exact = GameObject.Find("Canvas/RunSettings/CustomSettings/Scroll/Viewport/Content");
+        if (exact != null)
+        {
+            return exact.transform;
+        }
+
+        foreach (Transform transform in Resources.FindObjectsOfTypeAll<Transform>())
+        {
+            if (transform == null || !IsSceneObject(transform) || transform.name != "Content")
+            {
+                continue;
+            }
+
+            string path = GetTransformPath(transform);
+            if (path.EndsWith("RunSettings/CustomSettings/Scroll/Viewport/Content", StringComparison.Ordinal))
+            {
+                return transform;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsSceneObject(Transform transform)
+    {
+        return transform != null && transform.gameObject.scene.IsValid();
+    }
+
+    private static string GetTransformPath(Transform transform)
+    {
+        if (transform == null)
+        {
+            return string.Empty;
+        }
+
+        List<string> names = new List<string>();
+        Transform current = transform;
+        while (current != null)
+        {
+            names.Add(current.name);
+            current = current.parent;
+        }
+
+        names.Reverse();
+        return string.Join("/", names.ToArray());
     }
 
     private static string SanitizeKey(string label)
@@ -368,19 +627,47 @@ internal sealed class UnlockedSliderControl : MonoBehaviour
     private bool hasManualDisplayText;
     private float editStartedAt;
 
-    internal void TryInitialize(UnlockedSlidersPlugin owner, MonoBehaviour display)
+    internal bool IsInitialized => initialized;
+
+    internal bool TryInitialize(UnlockedSlidersPlugin owner, MonoBehaviour display, out string failureReason)
     {
+        failureReason = string.Empty;
         if (initialized)
         {
-            return;
+            return true;
         }
 
         slider = transform.Find("Slider")?.GetComponent<Slider>();
         valueText = transform.Find("Value")?.GetComponent<TextMeshProUGUI>();
         TextMeshProUGUI labelText = transform.Find("Label")?.GetComponent<TextMeshProUGUI>();
-        if (owner == null || display == null || slider == null || valueText == null || labelText == null)
+        if (ReferenceEquals(owner, null))
         {
-            return;
+            failureReason = "missing owner";
+            return false;
+        }
+
+        if (display == null)
+        {
+            failureReason = "missing RunSettingDisplay";
+            return false;
+        }
+
+        if (slider == null)
+        {
+            failureReason = "missing Slider child";
+            return false;
+        }
+
+        if (valueText == null)
+        {
+            failureReason = "missing Value child";
+            return false;
+        }
+
+        if (labelText == null)
+        {
+            failureReason = "missing Label child";
+            return false;
         }
 
         plugin = owner;
@@ -398,6 +685,7 @@ internal sealed class UnlockedSliderControl : MonoBehaviour
 
         plugin.Register(this);
         initialized = true;
+        return true;
     }
 
     internal void ResetToOriginalLimits()

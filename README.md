@@ -41,3 +41,28 @@ After the custom settings menu is opened with the mod installed, missing slider 
 ```text
 BepInEx\config\kef.casualtiesunknown.unlockedsliders.cfg
 ```
+
+## Troubleshooting
+
+If BepInEx says the plugin loaded but the Custom settings UI is unchanged, open the Custom settings menu once and then check:
+
+```text
+BepInEx\LogOutput.log
+```
+
+Look for lines containing:
+
+```text
+[Info   :Unlocked Sliders] Unlocked Sliders 0.2.14 loaded.
+[Info   :Unlocked Sliders] Canvas render callback fired.
+[Info   :Unlocked Sliders] Scan: source=canvasRender
+```
+
+The `Scan:` lines report whether the mod found the Custom settings panel, the scroll content, and any `RunSettingFloat` rows. If the log only shows the `loaded` line and never shows `Canvas render callback fired`, Unity's UI render callback is not reaching the mod.
+
+The diagnostic logging can be disabled in the generated config file:
+
+```ini
+[Diagnostics]
+Enabled = false
+```
